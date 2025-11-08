@@ -1,0 +1,1 @@
+pyinstaller --onefile --add-data "C:\ffmpeg\bin:ffmpeg/bin" "main.py"
