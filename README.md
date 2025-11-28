@@ -1,4 +1,4 @@
-투박하지만 yt_dlp을 이용한 유튜브 다운로드 프로그램. [다운로드 하기](https://github.com/Hoppouu/YoutubeDownloader/releases/tag/v1.0)
+yt_dlp을 이용한 유튜브 다운로드 프로그램. [다운로드 하기](https://github.com/Hoppouu/YoutubeDownloader/releases/tag/v1.0)
 ### 기타 내용
 1. URL복사하면 자동으로 프로그램의 다운로드할 URL에 넣어줌.
 2. 현재 다운로드 중인데 다른 URL을 다운로드 하려고 할 때 Queue에 넣어서 순차적으로 진행됨.
