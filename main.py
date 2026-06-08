@@ -46,7 +46,7 @@ def download_video_with_ytdlp(youtube_url):
         'format': 'bestvideo+bestaudio/best',
         'merge_output_format': 'mp4',
         'outtmpl': f'{directory}/%(title)s.%(ext)s',
-        'progress_hooks': [progress_hook],
+        'progress_hooks': [progress_hook]
     }
             
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:

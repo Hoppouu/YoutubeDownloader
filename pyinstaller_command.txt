@@ -1,1 +1,3 @@
+python -m venv venv
+pip install pyinstaller
 pyinstaller --onefile --add-data "C:\ffmpeg\bin:ffmpeg/bin" "main.py"
