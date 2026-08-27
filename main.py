@@ -21,6 +21,7 @@ from dependency_manager import (
     DenoManager,
     FFmpegManager,
     YtDlpManager,
+    classify_dependency_error,
     cleanup_stale_downloads,
 )
 from task_control import (
@@ -69,7 +70,8 @@ class DependencySetupThread(QThread):
                     100,
                     int(downloaded_bytes * 100 / total_bytes),
                 )
-                if local_progress == last_local_progress:
+                # A resumed/restarted HTTP request must never move the phase back.
+                if local_progress <= last_local_progress:
                     return
                 last_local_progress = local_progress
                 # Keep one point in the phase for extraction/validation.
@@ -94,6 +96,30 @@ class DependencySetupThread(QThread):
 
         return update
 
+    def download_retry_callback(self, label):
+        def retry(retry_number, retry_count, details):
+            self.cancel_token.raise_if_cancelled()
+            logger.warning(
+                "%s 다운로드 재시도 %d/%d: %s",
+                label,
+                retry_number,
+                retry_count,
+                details,
+            )
+            self.statusChanged.emit(
+                f"{label} 다운로드를 다시 시도하고 있습니다... "
+                f"({retry_number}/{retry_count})"
+            )
+
+        return retry
+
+    @staticmethod
+    def error_result(error):
+        return {
+            "category": classify_dependency_error(error),
+            "details": str(error),
+        }
+
     def run(self):
         result = {
             "yt_dlp_ready": False,
@@ -116,6 +142,7 @@ class DependencySetupThread(QThread):
                     *self.YT_DLP_PHASE,
                     "yt-dlp를 확인하고 있습니다...",
                 ),
+                retry_callback=self.download_retry_callback("yt-dlp"),
             )
             ffmpeg_manager = FFmpegManager(
                 cancel_token=self.cancel_token,
@@ -124,6 +151,7 @@ class DependencySetupThread(QThread):
                     *self.FFMPEG_PHASE,
                     "FFmpeg 압축을 해제하고 있습니다...",
                 ),
+                retry_callback=self.download_retry_callback("FFmpeg"),
             )
             deno_manager = DenoManager(
                 cancel_token=self.cancel_token,
@@ -132,6 +160,7 @@ class DependencySetupThread(QThread):
                     *self.DENO_PHASE,
                     "Deno 압축을 해제하고 있습니다...",
                 ),
+                retry_callback=self.download_retry_callback("Deno"),
             )
 
             self.statusChanged.emit("yt-dlp를 확인하고 있습니다...")
@@ -143,7 +172,7 @@ class DependencySetupThread(QThread):
                 raise
             except Exception as exc:
                 logger.exception("yt-dlp 준비 실패")
-                result["errors"]["yt-dlp"] = str(exc)
+                result["errors"]["yt-dlp"] = self.error_result(exc)
             self.progressUpdated.emit(self.YT_DLP_PHASE[1])
 
             self.cancel_token.raise_if_cancelled()
@@ -160,7 +189,7 @@ class DependencySetupThread(QThread):
                 raise
             except Exception as exc:
                 logger.exception("FFmpeg 준비 실패")
-                result["errors"]["ffmpeg"] = str(exc)
+                result["errors"]["ffmpeg"] = self.error_result(exc)
             self.progressUpdated.emit(self.FFMPEG_PHASE[1])
 
             self.cancel_token.raise_if_cancelled()
@@ -173,7 +202,7 @@ class DependencySetupThread(QThread):
                 raise
             except Exception as exc:
                 logger.exception("Deno 준비 실패")
-                result["errors"]["deno"] = str(exc)
+                result["errors"]["deno"] = self.error_result(exc)
             self.progressUpdated.emit(self.DENO_PHASE[1])
 
             if result["yt_dlp_ready"]:
@@ -195,7 +224,7 @@ class DependencySetupThread(QThread):
             logger.info("필수 도구 준비 작업 취소")
         except Exception as exc:
             logger.exception("필수 도구 준비 중 예상하지 못한 오류")
-            result["errors"]["unexpected"] = str(exc)
+            result["errors"]["unexpected"] = self.error_result(exc)
 
         self.completed.emit(result)
 
@@ -232,11 +261,25 @@ class YtDlpUpdateThread(QThread):
                 f"yt-dlp 업데이트 다운로드 중... {downloaded_mb:.1f} MB"
             )
 
+    def update_retry_status(self, retry_number, retry_count, details):
+        self.cancel_token.raise_if_cancelled()
+        logger.warning(
+            "yt-dlp 업데이트 다운로드 재시도 %d/%d: %s",
+            retry_number,
+            retry_count,
+            details,
+        )
+        self.statusChanged.emit(
+            "yt-dlp 업데이트 다운로드를 다시 시도하고 있습니다... "
+            f"({retry_number}/{retry_count})"
+        )
+
     def run(self):
         try:
             installed_version = YtDlpManager(
                 cancel_token=self.cancel_token,
                 progress_callback=self.update_download_progress,
+                retry_callback=self.update_retry_status,
             ).update(self.expected_version)
             self.progressUpdated.emit(100)
             self.completed.emit(True, installed_version, "")
@@ -528,6 +571,58 @@ class Main_Window(QMainWindow, Ui_MainWindow):
         )
         self.set_progress_target(self.dependency_progress_value)
 
+    @staticmethod
+    def dependency_error_message(tool_name, error_info):
+        category = (
+            error_info.get("category", "general")
+            if isinstance(error_info, dict)
+            else "general"
+        )
+        labels = {
+            "yt-dlp": "yt-dlp",
+            "ffmpeg": "FFmpeg/FFprobe",
+            "deno": "YouTube JavaScript 런타임(Deno)",
+            "unexpected": "필수 도구",
+        }
+        label = labels.get(tool_name, tool_name)
+
+        if category == "network":
+            message = (
+                f"{label}을(를) 준비하지 못했습니다.\n"
+                "인터넷 연결, 방화벽 또는 회사/학교 네트워크 차단을 확인해주세요."
+            )
+        elif category == "permission":
+            message = (
+                f"{label}을(를) 저장할 권한이 없습니다.\n"
+                "프로그램을 쓰기 가능한 일반 폴더에 옮긴 뒤 다시 실행해주세요."
+            )
+        elif category in {"security", "integrity", "execution"}:
+            message = (
+                f"{label} 파일을 사용할 수 없습니다.\n"
+                "Windows 보안 또는 백신이 파일을 차단·격리했는지 보호 기록을 확인해주세요."
+            )
+        elif category == "archive":
+            message = (
+                f"{label} 압축 파일이 손상되었거나 열리지 않습니다.\n"
+                "네트워크 상태를 확인한 뒤 프로그램을 다시 실행해주세요."
+            )
+        elif category == "filesystem":
+            message = (
+                f"{label} 파일을 저장하지 못했습니다.\n"
+                "디스크 여유 공간과 프로그램 폴더 상태를 확인해주세요."
+            )
+        else:
+            message = (
+                f"{label} 준비 중 예상하지 못한 오류가 발생했습니다.\n"
+                "자세한 내용은 logs 폴더의 로그 파일을 확인해주세요."
+            )
+
+        if tool_name == "ffmpeg":
+            message += "\n영상/음성 병합 기능을 사용할 수 없습니다."
+        elif tool_name == "deno":
+            message += "\n일부 YouTube 영상 형식이 보이지 않을 수 있습니다."
+        return message
+
     def on_dependencies_ready(self, result):
         self.dependencies_initializing = False
         if result.get("cancelled") or self.closing:
@@ -537,27 +632,10 @@ class Main_Window(QMainWindow, Ui_MainWindow):
         self.ffmpeg_ready = result["ffmpeg_ready"]
         self.deno_ready = result["deno_ready"]
 
-        error_messages = []
-        if "yt-dlp" in result["errors"]:
-            error_messages.append(
-                "yt-dlp를 준비하지 못했습니다.\n인터넷 연결을 확인해주세요."
-            )
-        if "ffmpeg" in result["errors"]:
-            error_messages.append(
-                "FFmpeg를 준비하지 못했습니다.\n"
-                "영상/음성 병합 기능을 사용할 수 없습니다.\n"
-                "인터넷 연결을 확인해주세요."
-            )
-        if "deno" in result["errors"]:
-            error_messages.append(
-                "YouTube JavaScript 런타임(Deno)을 준비하지 못했습니다.\n"
-                "일부 영상 형식이 보이지 않거나 다운로드되지 않을 수 있습니다."
-            )
-        if "unexpected" in result["errors"]:
-            error_messages.append(
-                "필수 도구 준비 중 예상하지 못한 오류가 발생했습니다.\n"
-                "자세한 내용은 로그 파일을 확인해주세요."
-            )
+        error_messages = [
+            self.dependency_error_message(tool_name, error_info)
+            for tool_name, error_info in result["errors"].items()
+        ]
 
         if error_messages:
             QMessageBox.warning(self, "도구 준비 실패", "\n\n".join(error_messages))

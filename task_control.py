@@ -19,6 +19,10 @@ class CancellationToken:
     def is_cancelled(self):
         return self._event.is_set()
 
+    def wait(self, timeout):
+        """Wait for cancellation and return True when cancellation was requested."""
+        return self._event.wait(timeout)
+
     def raise_if_cancelled(self):
         if self.is_cancelled():
             raise OperationCancelled("작업이 취소되었습니다.")
