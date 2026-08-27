@@ -1,4 +1,4 @@
-yt_dlp
-pyperclip
 PySide6
 requests
+
+# yt-dlp is downloaded as the official tools/yt-dlp.exe at runtime.
